@@ -1,0 +1,4 @@
+
+OCTOPI_OVERRIDE_HOSTNAME=octopus-man
+OCTOPI_OCTOPRINT_REPO_SHIP=https://github.com/xdissent/OctoPrint.git
+OCTOPI_OCTOPRINT_REPO_BRANCH=octopus-man

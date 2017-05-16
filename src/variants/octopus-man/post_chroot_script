@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -x
+
+source /common.sh
+install_chroot_fail_on_error_trap
+
+# Change password
+echo "$OCTOPI_OCTOPUS_MAN_PASSWORD" > /boot/octopi-password.txt
+
+# Add SSH Key
+mkdir -p /home/pi/.ssh
+echo "$OCTOPI_OCTOPUS_MAN_SSH_KEY" > /home/pi/.ssh/authorized_keys
+chown -hR pi:pi /home/pi/.ssh
+
+# Wifi
+cat >> /boot/octopi-network.txt <<EOF
+iface wlan0-octopi inet manual
+    wpa-ssid "$OCTOPI_OCTOPUS_MAN_WIFI_SSID"
+    wpa-psk "$OCTOPI_OCTOPUS_MAN_WIFI_PSK"
+EOF
+
+# PiTFT
+echo 'export FRAMEBUFFER=/dev/fb1' >> /home/pi/.profile
+echo 'dtoverlay=pitft35-resistive,rotate=270,speed=25000000,fps=20' >> /boot/config.txt
+sed -i 's/rootwait/rootwait fbcon=map:10 fbcon=font:VGA8x8/g' /boot/cmdline.txt
+sed -i '/exit 0/ish -c "TERM=linux setterm -blank 0 >\/dev\/tty0"' /etc/rc.local
+echo 'SUBSYSTEM=="input", ATTRS{name}=="stmpe-ts", ENV{DEVNAME}=="*event*", SYMLINK+="input/touchscreen"' > /etc/udev/rules.d/95-stmpe.rules
+
+# X
+apt-get install -y --no-install-recommends xinit xinput xserver-xorg xserver-xorg-video-fbdev x11-xserver-utils
+mkdir -p /etc/X11/xorg.conf.d
+cat > /etc/X11/xorg.conf.d/99-fbdev.conf <<EOF
+Section "Device"
+  Identifier "touchscreen"
+  Driver "fbdev"
+  Option "fbdev" "/dev/fb1"
+EndSection
+EOF
+cat > /etc/X11/xorg.conf.d/99-calibration.conf <<EOF
+Section "InputClass"
+  Identifier "calibration"
+  MatchProduct "stmpe-ts"
+  Option "Calibration" "3800 120 200 3900"
+  Option "SwapAxes" "1"
+EndSection
+EOF
+echo '8 -8432 32432138 5699 -112 -965922 65536' > /etc/pointercal
+
+# TouchUI
+sudo -u pi /home/pi/oprint/bin/pip install https://github.com/BillyBlaze/OctoPrint-TouchUI/archive/master.zip
+apt-get install -y --no-install-recommends matchbox unclutter chromium-browser
+git clone https://github.com/BillyBlaze/OctoPrint-TouchUI-autostart.git /home/pi/TouchUI-autostart/
+cp /home/pi/TouchUI-autostart/touchui.init /etc/init.d/touchui
+chmod +x /etc/init.d/touchui
+cp /home/pi/TouchUI-autostart/touchui.default /etc/default/touchui
+update-rc.d touchui defaults
+echo 'su $TOUCHUI_USER -c "xinput set-prop stmpe-ts \"Coordinate Transformation Matrix\" 0 -1 1 1 0 0 0 0 1"' > /home/pi/TouchUI-autostart/calibration.sh
+chown -hR pi:pi /home/pi/TouchUI-autostart
+
+# Other plugins
+sudo -u pi /home/pi/oprint/bin/pip install https://github.com/Salandora/octoprint-customControl/archive/master.zip
+sudo -u pi /home/pi/oprint/bin/pip install https://github.com/jneilliii/OctoPrint-M117NavBar/archive/master.zip
+sudo -u pi /home/pi/oprint/bin/pip install https://github.com/imrahil/OctoPrint-NavbarTemp/archive/master.zip
+
+# Octoprint Config
+unpack /filesystem/home/pi/.octoprint /home/pi/.octoprint pi
+OCTOPI_OCTOPUS_MAN_OCTOPRINT_SALT=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
+OCTOPI_OCTOPUS_MAN_OCTOPRINT_HASH=$(echo -n "$OCTOPI_OCTOPUS_MAN_OCTOPRINT_PASSWORD" | sha512sum | awk '{print $1}')
+cat > /home/pi/.octoprint/users.yaml <<EOF
+$OCTOPI_OCTOPUS_MAN_OCTOPRINT_USER
+  active: true
+  apikey: null
+  password: $OCTOPI_OCTOPUS_MAN_OCTOPRINT_HASH
+  roles:
+  - user
+  - admin
+  settings: {}
+EOF
+cat > /home/pi/.octoprint/config.yaml <<EOF
+accessControl:
+  salt: $OCTOPI_OCTOPUS_MAN_OCTOPRINT_SALT
+  autologinLocal: true
+  autologinAs: $OCTOPI_OCTOPUS_MAN_OCTOPRINT_USER
+appearance:
+  name: Octopus Man
+controls:
+  - children:
+    - command: M355 S1 C%(color)s B%(brightness)s
+      input:
+      - default: 0
+        name: Color
+        parameter: color
+        slider:
+          max: '9'
+          min: '0'
+          step: '1'
+      - default: 255
+        name: Brightness
+        parameter: brightness
+        slider:
+          max: '255'
+          min: '0'
+          step: '1'
+      name: 'On'
+    - command: M355 S0
+      name: 'Off'
+    layout: horizontal
+    name: Lights
+plugins:
+  cura:
+    cura_engine: /usr/local/bin/cura_engine
+  discovery:
+    publicPort: 80
+  softwareupdate:
+    checks:
+      octoprint:
+        update_folder: /home/pi/OctoPrint
+        type: git_commit
+printerProfiles:
+  default: _default
+serial:
+  autoconnect: true
+  baudrate: 250000
+  port: /dev/ttyACM0
+server:
+  commands:
+    systemShutdownCommand: sudo shutdown -h now
+    systemRestartCommand: sudo shutdown -r now
+    serverRestartCommand: sudo service octoprint restart
+  firstRun: false
+  seenWizards:
+    corewizard: null
+    cura: null
+slicing:
+  defaultProfiles:
+    cura: default
+webcam:
+  ffmpeg: /usr/bin/avconv
+  snapshot: http://127.0.0.1:8080/?action=snapshot
+  stream: /webcam/?action=stream
+  timelapse:
+    fps: 25
+    options:
+      retractionZHop: 0.0
+    postRoll: 0
+    type: zchange
+  watermark: false
+EOF
+chown -hR pi:pi /home/pi/.octoprint
+
+#cleanup
+apt-get clean
